@@ -1,0 +1,27 @@
+{
+  "name": "obsidian-canvas-bend-points",
+  "version": "0.1.4",
+  "description": "Editable bend points and movable labels for Obsidian Canvas edges.",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "test": "vitest run"
+  },
+  "keywords": ["obsidian", "canvas", "edges", "waypoints"],
+  "author": "Jesús David Angarita Ibarbuen",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Ninquiet/obsidian-canvas-bend-points.git"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "builtin-modules": "^4.0.0",
+    "esbuild": "^0.25.3",
+    "obsidian": "^1.8.7",
+    "tslib": "^2.8.1",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.2"
+  }
+}
