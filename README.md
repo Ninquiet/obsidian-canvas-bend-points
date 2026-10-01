@@ -4,6 +4,10 @@ Add draggable bend points to Obsidian Canvas connections, preview the route whil
 
 > Agrega puntos de control arrastrables a las conexiones de Obsidian Canvas, previsualiza la ruta durante el arrastre y cambia la posición de sus etiquetas. [Leer en español](#español).
 
+<p align="center">
+  <img src="assets/demo.webp" alt="Canvas Bend Points demonstration" width="960">
+</p>
+
 ## Features
 
 - Double-click an edge to add one or more bend points.
