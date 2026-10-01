@@ -1,6 +1,6 @@
 {
   "name": "obsidian-canvas-bend-points",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Editable bend points and movable labels for Obsidian Canvas edges.",
   "main": "main.js",
   "scripts": {

@@ -23,6 +23,7 @@ export class CanvasController {
   private readonly boundLabels = new WeakSet<Element>();
   private readonly handleGroups = new Map<string, HTMLDivElement>();
   private readonly draftData = new WeakMap<CanvasEdgeLike, BendEdgeData>();
+  private readonly labelRenderKeys = new Map<string, string>();
 
   constructor(private readonly canvas: CanvasLike, private readonly settings: ControllerSettings) {
     this.loop = this.loop.bind(this);
@@ -35,6 +36,7 @@ export class CanvasController {
     for (const { element, type, listener, capture } of this.listeners) element.removeEventListener(type, listener, capture);
     for (const group of this.handleGroups.values()) group.remove();
     this.handleGroups.clear();
+    this.labelRenderKeys.clear();
     this.canvas.wrapperEl?.removeClass("canvas-bend-points-active");
   }
 
@@ -84,12 +86,13 @@ export class CanvasController {
         edge.center = pointAtPathFraction(points, 0.5);
       }
       this.renderHandles(edge, id, data, points, display ?? interaction);
-      this.bindAndPositionLabel(edge, data, points);
+      this.bindAndPositionLabel(edge, id, data, points);
     }
     for (const [id, group] of this.handleGroups.entries()) {
       if (!existing.has(id)) {
         group.remove();
         this.handleGroups.delete(id);
+        this.labelRenderKeys.delete(id);
       }
     }
   }
@@ -225,7 +228,16 @@ export class CanvasController {
     this.listen(handle, "dblclick", onDoubleClick);
   }
 
-  private bindAndPositionLabel(edge: CanvasEdgeLike, data: BendEdgeData, points: Point[]): void {
+  private bindAndPositionLabel(edge: CanvasEdgeLike, edgeId: string, data: BendEdgeData, points: Point[]): void {
+    const position = data.canvasBendLabel;
+    edge.center = pointAtPathFraction(points, position?.t ?? 0.5);
+    const renderKey = `${points.map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(";")}|${position?.t ?? 0.5}`;
+    if (this.labelRenderKeys.get(edgeId) !== renderKey) {
+      if (edge.labelElement && !(edge.labelElement instanceof HTMLElement) && !(edge.labelElement instanceof SVGElement)) {
+        edge.labelElement.render?.();
+      }
+      this.labelRenderKeys.set(edgeId, renderKey);
+    }
     const label = resolveElement(edge.labelElement);
     if (!label) return;
     if (!this.boundLabels.has(label)) {
@@ -275,10 +287,8 @@ export class CanvasController {
       this.listen(label, "pointerdown", onPointerDown);
       this.listen(label, "dblclick", onDoubleClick);
     }
-    const position = data.canvasBendLabel;
     label.toggleClass("is-canvas-bend-label-moved", Boolean(position));
     (label as HTMLElement).style.translate = position ? `${position.dx}px ${position.dy}px` : "";
-    if (position) edge.center = pointAtPathFraction(points, position.t);
   }
 
   private edgePoints(edge: CanvasEdgeLike, data: BendEdgeData): Point[] {

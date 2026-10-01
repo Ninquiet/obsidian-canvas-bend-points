@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.5
+
+- Keep native edge labels centered on the customized multi-point route.
+- Update label positions live while bend points are dragged.
+- Avoid redundant label renders when edge geometry has not changed.
+
 ## 0.1.4
 
 - Add an independent live path preview while dragging bend points.

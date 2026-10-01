@@ -1,7 +1,7 @@
 {
   "id": "canvas-bend-points",
   "name": "Canvas Bend Points",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "minAppVersion": "1.5.0",
   "description": "Add draggable bend points to Canvas connections and move their labels.",
   "author": "santi",
