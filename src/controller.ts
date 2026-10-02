@@ -23,6 +23,8 @@ export class CanvasController {
   private readonly boundLabels = new WeakSet<Element>();
   private readonly handleGroups = new Map<string, HTMLDivElement>();
   private readonly draftData = new WeakMap<CanvasEdgeLike, BendEdgeData>();
+  private readonly runtimeData = new Map<string, BendEdgeData>();
+  private readonly routedEdges = new Set<string>();
   private readonly labelRenderKeys = new Map<string, string>();
 
   constructor(private readonly canvas: CanvasLike, private readonly settings: ControllerSettings) {
@@ -36,6 +38,8 @@ export class CanvasController {
     for (const { element, type, listener, capture } of this.listeners) element.removeEventListener(type, listener, capture);
     for (const group of this.handleGroups.values()) group.remove();
     this.handleGroups.clear();
+    this.runtimeData.clear();
+    this.routedEdges.clear();
     this.labelRenderKeys.clear();
     this.canvas.wrapperEl?.removeClass("canvas-bend-points-active");
   }
@@ -51,7 +55,7 @@ export class CanvasController {
     let changed = 0;
     for (const edge of this.canvas.edges.values()) {
       if (!selected.has(edge)) continue;
-      const data = this.draftData.get(edge) ?? edge.getData();
+      const data = this.draftData.get(edge) ?? this.currentData(edge);
       if (!data.canvasBendPoints?.length && !data.canvasBendLabel) continue;
       delete data.canvasBendPoints;
       delete data.canvasBendLabel;
@@ -71,19 +75,25 @@ export class CanvasController {
   private scanEdges(): void {
     const existing = new Set<string>();
     for (const [mapId, edge] of this.canvas.edges.entries()) {
-      const id = edge.getData().id || edge.id || mapId;
+      const persistedData = edge.getData();
+      const id = persistedData.id || edge.id || mapId;
+      if (!this.runtimeData.has(id)) this.runtimeData.set(id, cloneEdgeData(persistedData));
+      const data = this.draftData.get(edge) ?? mergeRuntimeData(persistedData, this.runtimeData.get(id));
       existing.add(id);
       const display = resolveSvgElement(edge.path?.display);
       const interaction = resolveSvgElement(edge.path?.interaction);
       if (interaction && !this.boundPaths.has(interaction)) this.bindPath(interaction, edge);
       if (display && !this.boundPaths.has(display)) this.bindPath(display, edge);
-      const data = edge.getData();
       const points = this.edgePoints(edge, data);
       if (data.canvasBendPoints?.length) {
         const path = roundedPolylinePath(points, this.settings.bendRadius);
         setPath(display, path);
         setPath(interaction, path);
         edge.center = pointAtPathFraction(points, 0.5);
+        this.routedEdges.add(id);
+      } else if (this.routedEdges.delete(id)) {
+        edge.updatePath?.();
+        edge.render?.();
       }
       this.renderHandles(edge, id, data, points, display ?? interaction);
       this.bindAndPositionLabel(edge, id, data, points);
@@ -92,6 +102,7 @@ export class CanvasController {
       if (!existing.has(id)) {
         group.remove();
         this.handleGroups.delete(id);
+        this.runtimeData.delete(id);
         this.labelRenderKeys.delete(id);
       }
     }
@@ -101,7 +112,7 @@ export class CanvasController {
     this.boundPaths.add(path);
     const onPointerDown = ((event: PointerEvent) => {
       const liveEdge = this.getLiveEdge(edge);
-      if (this.canvas.readonly || !liveEdge.getData().canvasBendPoints?.length) return;
+      if (this.canvas.readonly || !this.currentData(liveEdge).canvasBendPoints?.length) return;
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
@@ -113,7 +124,7 @@ export class CanvasController {
       event.stopPropagation();
       const canvasPoint = screenToSvg(path, { x: event.clientX, y: event.clientY });
       const liveEdge = this.getLiveEdge(edge);
-      const data = liveEdge.getData();
+      const data = this.currentData(liveEdge);
       const polyline = this.edgePoints(liveEdge, data);
       const nearest = closestSegment(canvasPoint, polyline);
       if (!nearest) return;
@@ -179,21 +190,21 @@ export class CanvasController {
       const pointId = handle.dataset.pointId;
       if (!pointId) return;
       const liveEdge = this.getLiveEdge(edge);
-      const dragData = cloneEdgeData(liveEdge.getData());
+      const dragData = cloneEdgeData(this.currentData(liveEdge));
       this.draftData.set(liveEdge, dragData);
-      const previewPath = this.createDragPreview(liveEdge);
       const onMove = (moveEvent: PointerEvent): void => {
         moveEvent.preventDefault();
         moveEvent.stopPropagation();
         moveEvent.stopImmediatePropagation();
         const currentEdge = this.getLiveEdge(liveEdge);
+        this.draftData.set(currentEdge, dragData);
         const currentPath = resolveSvgElement(currentEdge.path?.display) ?? resolveSvgElement(currentEdge.path?.interaction) ?? referencePath;
         const point = screenToSvg(currentPath, { x: moveEvent.clientX, y: moveEvent.clientY });
         const bend = dragData.canvasBendPoints?.find((candidate) => candidate.id === pointId);
         if (!bend) return;
         bend.x = point.x;
         bend.y = point.y;
-        this.renderEdgePreview(currentEdge, dragData, previewPath);
+        this.renderEdgePreview(currentEdge, dragData);
       };
       const onUp = (upEvent: PointerEvent): void => {
         upEvent.preventDefault();
@@ -204,11 +215,9 @@ export class CanvasController {
         handle.removeEventListener("pointermove", onMove);
         handle.removeEventListener("pointerup", onUp);
         handle.removeEventListener("pointercancel", onUp);
-        previewPath?.remove();
         const currentEdge = this.getLiveEdge(liveEdge);
         this.persist(currentEdge, dragData);
-        this.draftData.delete(liveEdge);
-        this.draftData.delete(currentEdge);
+        this.settleDraggedEdge(liveEdge, currentEdge, dragData);
       };
       handle.addEventListener("pointermove", onMove);
       handle.addEventListener("pointerup", onUp);
@@ -217,9 +226,10 @@ export class CanvasController {
     const onDoubleClick = ((event: MouseEvent) => {
       event.preventDefault();
       event.stopPropagation();
+      event.stopImmediatePropagation();
       const pointId = handle.dataset.pointId;
       const liveEdge = this.getLiveEdge(edge);
-      const data = liveEdge.getData();
+      const data = this.currentData(liveEdge);
       data.canvasBendPoints = (data.canvasBendPoints ?? []).filter((point) => point.id !== pointId);
       if (data.canvasBendPoints.length === 0) delete data.canvasBendPoints;
       this.persist(liveEdge, data);
@@ -230,7 +240,8 @@ export class CanvasController {
 
   private bindAndPositionLabel(edge: CanvasEdgeLike, edgeId: string, data: BendEdgeData, points: Point[]): void {
     const position = data.canvasBendLabel;
-    edge.center = pointAtPathFraction(points, position?.t ?? 0.5);
+    const calculatedRouteCenter = pointAtPathFraction(points, position?.t ?? 0.5);
+    edge.center = calculatedRouteCenter;
     const renderKey = `${points.map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(";")}|${position?.t ?? 0.5}`;
     if (this.labelRenderKeys.get(edgeId) !== renderKey) {
       if (edge.labelElement && !(edge.labelElement instanceof HTMLElement) && !(edge.labelElement instanceof SVGElement)) {
@@ -238,7 +249,9 @@ export class CanvasController {
       }
       this.labelRenderKeys.set(edgeId, renderKey);
     }
-    const label = resolveElement(edge.labelElement);
+    const directLabel = resolveElement(edge.labelElement);
+    const canvasPositionsLabel = Boolean(directLabel?.isConnected);
+    const label = canvasPositionsLabel ? directLabel : this.resolveEdgeLabel(edge, data, points);
     if (!label) return;
     if (!this.boundLabels.has(label)) {
       this.boundLabels.add(label);
@@ -250,7 +263,7 @@ export class CanvasController {
         event.stopImmediatePropagation();
         const reference = resolveSvgElement(edge.path?.display) ?? label;
         const start = screenToSvg(reference, { x: event.clientX, y: event.clientY });
-        const dragData = cloneEdgeData(edge.getData());
+        const dragData = cloneEdgeData(this.currentData(edge));
         const initial = dragData.canvasBendLabel ?? { t: 0.5, dx: 0, dy: 0 };
         this.draftData.set(edge, dragData);
         label.setPointerCapture(event.pointerId);
@@ -280,7 +293,7 @@ export class CanvasController {
         if (!event.altKey) return;
         event.preventDefault();
         event.stopPropagation();
-        const currentData = edge.getData();
+        const currentData = this.currentData(edge);
         delete currentData.canvasBendLabel;
         this.persist(edge, currentData);
       }) as EventListener;
@@ -288,7 +301,38 @@ export class CanvasController {
       this.listen(label, "dblclick", onDoubleClick);
     }
     label.toggleClass("is-canvas-bend-label-moved", Boolean(position));
-    (label as HTMLElement).style.translate = position ? `${position.dx}px ${position.dy}px` : "";
+    const positionElement = label.closest(".canvas-path-label-wrapper") ?? label;
+    positionElement.addClass("canvas-bend-label-position");
+    const nativeCenter = getInlineTranslation(positionElement) ?? midpoint(points[0], points[points.length - 1]);
+    const routeCenter = data.canvasBendPoints?.length ? calculatedRouteCenter : nativeCenter;
+    edge.center = routeCenter;
+    const dx = routeCenter.x - nativeCenter.x + (position?.dx ?? 0);
+    const dy = routeCenter.y - nativeCenter.y + (position?.dy ?? 0);
+    (positionElement as HTMLElement).style.setProperty("--canvas-bend-label-x", `${Math.abs(dx) > 0.01 ? dx : 0}px`);
+    (positionElement as HTMLElement).style.setProperty("--canvas-bend-label-y", `${Math.abs(dy) > 0.01 ? dy : 0}px`);
+  }
+
+  private resolveEdgeLabel(edge: CanvasEdgeLike, data: BendEdgeData, points: Point[]): HTMLElement | SVGElement | null {
+    const direct = resolveElement(edge.labelElement);
+    if (direct?.isConnected) return direct;
+    const labelText = typeof data.label === "string" ? data.label.trim() : "";
+    if (!labelText) return null;
+    const path = resolveSvgElement(edge.path?.display) ?? resolveSvgElement(edge.path?.interaction);
+    if (!path) return null;
+    const expected = svgToScreen(path, midpoint(points[0], points[points.length - 1]));
+    const candidates = Array.from(document.querySelectorAll<HTMLElement>(".canvas-path-label"))
+      .filter((element) => element.isConnected && element.textContent?.trim() === labelText);
+    let closest: HTMLElement | null = null;
+    let closestDistance = Number.POSITIVE_INFINITY;
+    for (const candidate of candidates) {
+      const rect = candidate.getBoundingClientRect();
+      const distance = Math.hypot(rect.left + rect.width / 2 - expected.x, rect.top + rect.height / 2 - expected.y);
+      if (distance < closestDistance) {
+        closest = candidate;
+        closestDistance = distance;
+      }
+    }
+    return closest;
   }
 
   private edgePoints(edge: CanvasEdgeLike, data: BendEdgeData): Point[] {
@@ -298,28 +342,45 @@ export class CanvasController {
   }
 
   private persist(edge: CanvasEdgeLike, data: BendEdgeData): void {
+    const edgeId = data.id || edge.id;
+    if (edgeId) this.runtimeData.set(edgeId, cloneEdgeData(data));
     edge.setData?.(data);
     this.canvas.markDirty?.(edge);
     this.canvas.requestSave?.();
   }
 
-  private createDragPreview(edge: CanvasEdgeLike): SVGPathElement | null {
-    const display = resolveSvgElement(edge.path?.display);
-    const source = display ?? resolveSvgElement(edge.path?.interaction);
-    if (!source?.ownerSVGElement) return null;
-    const preview = source.cloneNode(false) as SVGPathElement;
-    preview.removeAttribute("id");
-    preview.addClass("canvas-bend-preview-path");
-    preview.setAttribute("pointer-events", "none");
-    source.ownerSVGElement.appendChild(preview);
-    return preview;
+  private currentData(edge: CanvasEdgeLike): BendEdgeData {
+    const persisted = edge.getData();
+    const edgeId = persisted.id || edge.id;
+    return mergeRuntimeData(persisted, edgeId ? this.runtimeData.get(edgeId) : undefined);
   }
 
-  private renderEdgePreview(edge: CanvasEdgeLike, data: BendEdgeData, preview: SVGPathElement | null): void {
-    const pathValue = roundedPolylinePath(this.edgePoints(edge, data), this.settings.bendRadius);
-    setPath(preview, pathValue);
+  private renderEdgePreview(edge: CanvasEdgeLike, data: BendEdgeData): void {
+    const points = this.edgePoints(edge, data);
+    const pathValue = roundedPolylinePath(points, this.settings.bendRadius);
     setPath(resolveSvgElement(edge.path?.display), pathValue);
     setPath(resolveSvgElement(edge.path?.interaction), pathValue);
+    const edgeId = data.id || edge.id;
+    if (edgeId) this.bindAndPositionLabel(edge, edgeId, data, points);
+  }
+
+  private settleDraggedEdge(originalEdge: CanvasEdgeLike, persistedEdge: CanvasEdgeLike, data: BendEdgeData): void {
+    let framesRemaining = 8;
+    const settle = (): void => {
+      if (this.destroyed) return;
+      const liveEdge = this.getLiveEdge(persistedEdge);
+      this.draftData.set(liveEdge, data);
+      this.renderEdgePreview(liveEdge, data);
+      framesRemaining--;
+      if (framesRemaining > 0) {
+        window.requestAnimationFrame(settle);
+        return;
+      }
+      this.draftData.delete(originalEdge);
+      this.draftData.delete(persistedEdge);
+      this.draftData.delete(liveEdge);
+    };
+    window.requestAnimationFrame(settle);
   }
 
   private getLiveEdge(edge: CanvasEdgeLike): CanvasEdgeLike {
@@ -382,11 +443,36 @@ function createId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function midpoint(a: Point, b: Point): Point {
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+}
+
+function getInlineTranslation(element: Element): Point | null {
+  if (!(element instanceof HTMLElement) || !element.matches(".canvas-path-label-wrapper")) return null;
+  const transform = element.style.transform;
+  if (!transform || transform === "none") return null;
+  try {
+    const matrix = new DOMMatrix(transform);
+    return { x: matrix.e, y: matrix.f };
+  } catch {
+    return null;
+  }
+}
+
 function cloneEdgeData(data: BendEdgeData): BendEdgeData {
   return {
     ...data,
     canvasBendPoints: data.canvasBendPoints?.map((point) => ({ ...point })),
     canvasBendLabel: data.canvasBendLabel ? { ...data.canvasBendLabel } : undefined
+  };
+}
+
+function mergeRuntimeData(persisted: BendEdgeData, runtime: BendEdgeData | undefined): BendEdgeData {
+  if (!runtime) return persisted;
+  return {
+    ...persisted,
+    canvasBendPoints: runtime.canvasBendPoints?.map((point) => ({ ...point })),
+    canvasBendLabel: runtime.canvasBendLabel ? { ...runtime.canvasBendLabel } : undefined
   };
 }
 

@@ -33,6 +33,10 @@
   cursor: default;
 }
 
+.canvas-bend-label-position {
+  translate: var(--canvas-bend-label-x, 0) var(--canvas-bend-label-y, 0) !important;
+}
+
 .canvas-bend-label.is-canvas-bend-label-moved,
 .canvas-bend-label:hover {
   cursor: grab;
@@ -40,11 +44,6 @@
 
 .canvas-bend-label:active {
   cursor: grabbing;
-}
-
-.canvas-bend-preview-path {
-  opacity: 0.9;
-  pointer-events: none !important;
 }
 
 body.is-mobile .canvas-bend-point {
